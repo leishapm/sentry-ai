@@ -187,13 +187,6 @@ As AI agents transition from passive chat assistants to autonomous systems capab
 
 ---
 
-## Team
-
-- **Backend & AI Architecture**: Team Member 1
-- **Frontend & UI/UX**: Team Member 2
-- **Product & DevOps**: Team Member 3
-
----
 
 ## License
 
