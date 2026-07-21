@@ -1,5 +1,8 @@
-"""Import SQLAlchemy models here so Alembic can discover them.
+"""Import SQLAlchemy models here so Alembic can discover them."""
 
-Business tables will be added when SENTRY firewall domains are implemented.
-"""
+from src.approval_requests.models import ApprovalRequest
+from src.audit_logs.models import AuditLog
+from src.policies.models import Policy
+
+__all__ = ["ApprovalRequest", "AuditLog", "Policy"]
 

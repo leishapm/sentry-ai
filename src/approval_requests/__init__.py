@@ -1,0 +1,2 @@
+"""Approval request domain package."""
+
