@@ -176,18 +176,3 @@ As AI agents transition from passive chat assistants to autonomous systems capab
    ```
 
 ---
-
-## Future Work
-
-- 🤖 **Native IBM Granite Integration**: Connect `GraniteReasoner` directly to watsonx.ai IBM Granite model endpoints for live LLM policy reasoning.
-- 🏢 **Enterprise Policy Management**: UI-driven policy editor with customizable rule expressions and role-based permissions.
-- 🔗 **Multi-Agent Orchestration**: Multi-tenant policy scoping for agentic workflows across complex enterprise toolchains.
-- 🔒 **OAuth2 & Role-Based Access Control**: Authentication layer for human approval workflows and admin dashboards.
-- ☁️ **Cloud Infrastructure Deployment**: Helm charts and Terraform manifests for Kubernetes & GCP deployment.
-
----
-
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
