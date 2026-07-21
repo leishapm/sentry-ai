@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import AsyncMock, MagicMock
 
 from src.core.enums import ApprovalStatus, Decision, PolicySeverity
 from src.db.session import get_session
@@ -33,6 +34,7 @@ class FakeExecutionService:
             reason="All placeholder rule checks passed.",
             violated_policy=None,
             suggested_fix=None,
+            confidence_score=0.99,
             execution_time_ms=1,
             rule_results=[
                 RuleResult(
@@ -53,6 +55,7 @@ class FakeAuditLogService:
         *,
         limit: int,
         offset: int,
+        **kwargs: object,
     ) -> AuditListResponse:
         return AuditListResponse(items=[], total=0, limit=limit, offset=offset)
 
@@ -63,6 +66,8 @@ class FakeAuditLogService:
             blocked_requests=2,
             confirmation_requests=3,
             average_risk_score=42.5,
+            average_execution_time_ms=12.5,
+            high_risk_requests=2,
         )
 
 
@@ -101,7 +106,9 @@ class FakePolicyService:
 
 
 async def fake_session() -> object:
-    yield object()
+    mock = AsyncMock()
+    mock.execute = AsyncMock(return_value=MagicMock())
+    yield mock
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +141,7 @@ async def test_execute_endpoint_returns_decision() -> None:
     body = response.json()
     assert body["decision"] == "ALLOW"
     assert body["audit_log_id"] == "00000000-0000-0000-0000-000000000001"
+    assert body["confidence_score"] == 0.99
 
 
 @pytest.mark.asyncio
@@ -158,6 +166,7 @@ async def test_stats_endpoint_returns_dashboard_counts() -> None:
 
     assert response.status_code == 200
     assert response.json()["average_risk_score"] == 42.5
+    assert response.json()["high_risk_requests"] == 2
 
 
 @pytest.mark.asyncio
@@ -192,4 +201,3 @@ async def test_policies_endpoint_returns_active_policies() -> None:
 
     assert response.status_code == 200
     assert response.json()[0]["policy_code"] == "SCOPE_BOUNDARY"
-

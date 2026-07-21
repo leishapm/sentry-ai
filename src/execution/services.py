@@ -70,13 +70,33 @@ class AuditLogService:
         self,
         session: AsyncSession,
         *,
-        limit: int,
-        offset: int,
+        limit: int = 25,
+        offset: int = 0,
+        agent_name: str | None = None,
+        tool_name: str | None = None,
+        decision: Decision | None = None,
+        min_risk_score: int | None = None,
     ) -> AuditListResponse:
-        total = await session.scalar(select(func.count()).select_from(AuditLog))
+        stmt = select(AuditLog)
+        count_stmt = select(func.count()).select_from(AuditLog)
+
+        filters = []
+        if agent_name:
+            filters.append(AuditLog.agent_name == agent_name)
+        if tool_name:
+            filters.append(AuditLog.tool_name == tool_name)
+        if decision:
+            filters.append(AuditLog.decision == decision)
+        if min_risk_score is not None:
+            filters.append(AuditLog.risk_score >= min_risk_score)
+
+        if filters:
+            stmt = stmt.where(*filters)
+            count_stmt = count_stmt.where(*filters)
+
+        total = await session.scalar(count_stmt)
         result = await session.scalars(
-            select(AuditLog)
-            .order_by(AuditLog.timestamp.desc())
+            stmt.order_by(AuditLog.timestamp.desc())
             .limit(limit)
             .offset(offset)
         )
@@ -95,6 +115,8 @@ class AuditLogService:
             func.count(AuditLog.id).filter(AuditLog.decision == Decision.BLOCK),
             func.count(AuditLog.id).filter(AuditLog.decision == Decision.CONFIRM),
             func.avg(AuditLog.risk_score),
+            func.avg(AuditLog.execution_time_ms),
+            func.count(AuditLog.id).filter(AuditLog.risk_score >= 70),
         )
         row = (await session.execute(stmt)).one()
 
@@ -104,6 +126,8 @@ class AuditLogService:
             blocked_requests=row[2] or 0,
             confirmation_requests=row[3] or 0,
             average_risk_score=round(float(row[4] or 0), 2),
+            average_execution_time_ms=round(float(row[5] or 0), 2),
+            high_risk_requests=row[6] or 0,
         )
 
     async def _existing_policy_code(
@@ -174,7 +198,7 @@ class ExecutionService:
     ) -> ExecuteResponse:
         started_at = perf_counter()
         rule_results = self.rule_engine.evaluate(request)
-        risk = self.risk_engine.assess(rule_results)
+        risk = self.risk_engine.assess(rule_results, request=request)
         execution_time_ms = max(0, round((perf_counter() - started_at) * 1000))
         audit_log, approval_request = await self.audit_log_service.record_execution(
             session=session,
