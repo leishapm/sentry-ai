@@ -9,6 +9,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://sentry:sentry_password@db:5432/sentry}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
       CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
+      WATSONX_API_KEY: ${WATSONX_API_KEY:-}
+      WATSONX_PROJECT_ID: ${WATSONX_PROJECT_ID:-}
+      WATSONX_URL: ${WATSONX_URL:-https://us-south.ml.cloud.ibm.com}
+      WATSONX_MODEL_ID: ${WATSONX_MODEL_ID:-ibm/granite-3-8b-instruct}
     ports:
       - "8000:8000"
     depends_on:

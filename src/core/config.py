@@ -1,8 +1,9 @@
 from enum import StrEnum
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Environment(StrEnum):
@@ -21,8 +22,13 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://sentry:sentry_password@localhost:5432/sentry"
     )
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
     cors_allow_credentials: bool = True
+
+    watsonx_api_key: str | None = Field(default=None)
+    watsonx_project_id: str | None = Field(default=None)
+    watsonx_url: str = Field(default="https://us-south.ml.cloud.ibm.com")
+    watsonx_model_id: str = Field(default="ibm/granite-3-8b-instruct")
 
     model_config = SettingsConfigDict(
         env_file=".env",
