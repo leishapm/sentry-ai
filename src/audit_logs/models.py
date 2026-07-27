@@ -8,7 +8,7 @@ from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Small
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.core.enums import Decision
+from src.core.enums import ApprovalStatus, Decision
 from src.db.base import Base
 
 
@@ -64,3 +64,15 @@ class AuditLog(Base):
         passive_deletes=True,
         uselist=False,
     )
+
+    # Convenience accessors for AuditEntry serialization - the API needs to tell
+    # callers whether a CONFIRM decision still has a pending approval (and its
+    # id) so a dashboard can act on it. Callers must eager-load approval_request
+    # (e.g. selectinload) since this is accessed outside of async-safe lazy load.
+    @property
+    def approval_request_id(self) -> uuid.UUID | None:
+        return self.approval_request.id if self.approval_request else None
+
+    @property
+    def approval_status(self) -> ApprovalStatus | None:
+        return self.approval_request.status if self.approval_request else None

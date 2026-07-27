@@ -258,6 +258,12 @@ function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+function approvalRowStatus(status: AuditEntry["approval_status"]): AuditRow["status"] {
+  if (status === "PENDING") return "pending";
+  if (status === "APPROVED") return "overridden";
+  return "completed"; // REJECTED, or no approval attached (ALLOW/BLOCK)
+}
+
 function auditEntryToRow(e: AuditEntry): AuditRow {
   return {
     id: e.id,
@@ -269,7 +275,23 @@ function auditEntryToRow(e: AuditEntry): AuditRow {
     risk: riskLevelFromScore(e.risk_score),
     policy: e.violated_policy || "—",
     reason: e.reason || "",
-    status: e.decision === "CONFIRM" ? "pending" : "completed",
+    status: approvalRowStatus(e.approval_status),
+  };
+}
+
+function auditEntryToApprovalItem(e: AuditEntry): ApprovalItem {
+  const params = (e.request_payload?.parameters ?? {}) as Record<string, unknown>;
+  return {
+    id: e.id,
+    agentName: e.agent_name,
+    action: e.action,
+    tool: e.tool_name,
+    riskLevel: riskLevelFromScore(e.risk_score),
+    riskScore: e.risk_score,
+    requestedAt: fmtTime(e.timestamp),
+    details: JSON.stringify(params),
+    reason: e.reason || "",
+    approvalRequestId: e.approval_request_id!,
   };
 }
 
@@ -893,17 +915,17 @@ function DemoModal({ onClose, onComplete }: {
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
-function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBlocked, kpiPending }: {
+function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBlocked, kpiPending, kpiAvgRisk }: {
   requests: AIRequest[]; queue: ApprovalItem[];
   onApprove: (id: string) => void; onReject: (id: string) => void;
-  kpiAllowed: number; kpiBlocked: number; kpiPending: number;
+  kpiAllowed: number; kpiBlocked: number; kpiPending: number; kpiAvgRisk: number;
 }) {
   const [pipeStep, setPipeStep] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setPipeStep((s) => (s + 1) % PIPELINE_STEPS.length), 900);
     return () => clearInterval(t);
   }, []);
-  const featured = requests[0];
+  const featured = requests.find((r) => r.decision === "BLOCK") ?? requests[0];
   return (
     <div className="space-y-5">
       {/* KPIs */}
@@ -911,7 +933,7 @@ function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBl
         <KPICard label="Allowed Requests" value={kpiAllowed.toLocaleString()} trend="+12% vs last hour" positive sparkData={SPARKLINE_ALLOWED} color={C.allow} icon={<CheckCircle2 size={14} className="text-emerald-400" />} />
         <KPICard label="Blocked Requests" value={kpiBlocked.toLocaleString()} trend="+3 critical events" positive={false} sparkData={SPARKLINE_BLOCKED} color={C.block} icon={<XCircle size={14} className="text-red-400" />} />
         <KPICard label="Pending Approval" value={kpiPending} trend={`${kpiPending} awaiting review`} positive={kpiPending === 0} sparkData={SPARKLINE_PENDING} color={C.confirm} icon={<Clock size={14} className="text-yellow-400" />} />
-        <KPICard label="Avg Risk Score" value="42.7" trend="↑ 8.3pts from baseline" positive={false} sparkData={SPARKLINE_RISK} color={C.blue} icon={<TrendingUp size={14} className="text-blue-400" />} />
+        <KPICard label="Avg Risk Score" value={kpiAvgRisk.toFixed(1)} trend="↑ 8.3pts from baseline" positive={false} sparkData={SPARKLINE_RISK} color={C.blue} icon={<TrendingUp size={14} className="text-blue-400" />} />
       </div>
 
       {/* Main grid */}
@@ -936,7 +958,9 @@ function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBl
             <div className="px-4 py-3 border-b border-border flex items-center gap-2">
               <Layers size={14} className="text-blue-400" />
               <span className="text-sm font-semibold">AI Policy Reasoning</span>
-              <span className="text-[10px] text-muted-foreground ml-1">— most recent BLOCK decision</span>
+              <span className="text-[10px] text-muted-foreground ml-1">
+                — {featured?.decision === "BLOCK" ? "most recent BLOCK decision" : "most recent decision"}
+              </span>
             </div>
             <div className="p-4">
               <PolicyReasoningPanel req={featured} />
@@ -1280,6 +1304,7 @@ export default function App() {
   const [demo, setDemo] = useState(false);
   const [allowed, setAllowed] = useState(1284);
   const [blocked, setBlocked] = useState(347);
+  const [avgRisk, setAvgRisk] = useState(42.7);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -1302,9 +1327,15 @@ export default function App() {
         if (auditRes.items.length > 0) {
           setAuditLog(auditRes.items.map(auditEntryToRow));
           setRequests(auditRes.items.map(auditEntryToAIRequest));
+          setQueue(
+            auditRes.items
+              .filter((e) => e.approval_status === "PENDING" && e.approval_request_id)
+              .map(auditEntryToApprovalItem)
+          );
         }
         setAllowed(stats.allowed_requests);
         setBlocked(stats.blocked_requests);
+        setAvgRisk(stats.average_risk_score);
         if (policyList.length > 0) {
           const triggered = new Map<string, number>();
           for (const e of auditRes.items) {
@@ -1321,10 +1352,13 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // Approving/rejecting a CONFIRM is a human override, not a new SENTRY
+  // decision - it does not change allowed/blocked counts (those reflect
+  // SENTRY's own ALLOW/BLOCK verdicts), only the item's resolved status.
   const handleApprove = async (id: string) => {
     const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
-    setAllowed((a) => a + 1);
+    setAuditLog((log) => log.map((row) => (row.id === id ? { ...row, status: "overridden" } : row)));
     if (item?.approvalRequestId) {
       try { await api.decideApproval(item.approvalRequestId, "APPROVED"); }
       catch (err) { console.warn("Approve call failed:", err); }
@@ -1333,7 +1367,7 @@ export default function App() {
   const handleReject = async (id: string) => {
     const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
-    setBlocked((b) => b + 1);
+    setAuditLog((log) => log.map((row) => (row.id === id ? { ...row, status: "completed" } : row)));
     if (item?.approvalRequestId) {
       try { await api.decideApproval(item.approvalRequestId, "REJECTED"); }
       catch (err) { console.warn("Reject call failed:", err); }
@@ -1350,7 +1384,7 @@ export default function App() {
     // Refetch actual totals rather than guessing locally - the demo's CONFIRM
     // scenario is already resolved via Approve/Reject inside the modal itself.
     api.getStats()
-      .then((s) => { setAllowed(s.allowed_requests); setBlocked(s.blocked_requests); setConnected(true); })
+      .then((s) => { setAllowed(s.allowed_requests); setBlocked(s.blocked_requests); setAvgRisk(s.average_risk_score); setConnected(true); })
       .catch((err) => console.warn("Failed to refresh stats after demo:", err));
     setDemo(false);
   };
@@ -1459,7 +1493,7 @@ export default function App() {
         <main className="flex-1 overflow-auto p-5" style={{ scrollbarWidth: "none" }}>
           {page === "dashboard" && (
             <DashboardPage requests={requests} queue={queue} onApprove={handleApprove} onReject={handleReject}
-              kpiAllowed={allowed} kpiBlocked={blocked} kpiPending={queue.length} />
+              kpiAllowed={allowed} kpiBlocked={blocked} kpiPending={queue.length} kpiAvgRisk={avgRisk} />
           )}
           {page === "live" && <LiveRequestsPage requests={requests} />}
           {page === "queue" && <ApprovalQueuePage queue={queue} onApprove={handleApprove} onReject={handleReject} />}

@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.approval_requests.models import ApprovalRequest
 from src.audit_logs.models import AuditLog
@@ -77,7 +78,7 @@ class AuditLogService:
         decision: Decision | None = None,
         min_risk_score: int | None = None,
     ) -> AuditListResponse:
-        stmt = select(AuditLog)
+        stmt = select(AuditLog).options(selectinload(AuditLog.approval_request))
         count_stmt = select(func.count()).select_from(AuditLog)
 
         filters = []

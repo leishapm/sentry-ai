@@ -64,6 +64,8 @@ class AuditEntry(BaseModel):
     execution_time_ms: int | None
     request_payload: dict[str, Any] | None
     response_payload: dict[str, Any] | None
+    approval_request_id: UUID | None = None
+    approval_status: ApprovalStatus | None = None
 
 
 class AuditListResponse(BaseModel):

@@ -56,6 +56,8 @@ export interface AuditEntry {
   execution_time_ms: number | null;
   request_payload: Record<string, unknown> | null;
   response_payload: Record<string, unknown> | null;
+  approval_request_id: string | null;
+  approval_status: "PENDING" | "APPROVED" | "REJECTED" | null;
 }
 
 export interface AuditListResponse {
