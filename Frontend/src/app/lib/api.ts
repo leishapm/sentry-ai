@@ -1,7 +1,8 @@
+/// <reference types="vite/client" />
 // Thin client for the SENTRY backend (src/execution/router.py).
 // Base URL comes from VITE_API_URL, defaulting to the local docker-compose port.
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
 
 export type Decision = "ALLOW" | "BLOCK" | "CONFIRM";
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -121,6 +122,12 @@ export const api = {
     request<unknown>(`/approve/${id}`, {
       method: "POST",
       body: JSON.stringify({ status, approved_by: approvedBy }),
+    }),
+
+  updatePolicy: (policyCode: string, enabled: boolean) =>
+    request<PolicyResponse>(`/policies/${policyCode}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
     }),
 };
 

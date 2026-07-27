@@ -12,6 +12,7 @@ from src.execution.schemas import (
     AuditListResponse,
     ExecuteResponse,
     PolicyResponse,
+    PolicyUpdateRequest,
     StatsResponse,
     ToolExecutionRequest,
 )
@@ -123,11 +124,33 @@ async def decide_approval_request(
     "/policies",
     response_model=list[PolicyResponse],
     status_code=status.HTTP_200_OK,
-    summary="List Active Security Policies",
-    description="Returns all active security firewall policies ordered by severity.",
+    summary="List Security Policies",
+    description="Returns all security firewall policies ordered by severity.",
 )
 async def list_policies(
     session: AsyncSession = Depends(get_session),
     service: PolicyService = Depends(get_policy_service),
 ) -> list[PolicyResponse]:
-    return await service.list_active(session)
+    return await service.list_all(session)
+
+
+@router.patch(
+    "/policies/{policy_code}",
+    response_model=PolicyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update Security Policy Status",
+    description="Updates the enabled status of a security firewall policy by its policy code.",
+)
+async def update_policy(
+    policy_code: str,
+    request: PolicyUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    service: PolicyService = Depends(get_policy_service),
+) -> PolicyResponse:
+    policy = await service.update_policy(session, policy_code, enabled=request.enabled)
+    if policy is None:
+        raise EntityNotFoundException(
+            message=f"Policy with code '{policy_code}' not found.",
+        )
+    return PolicyResponse.model_validate(policy)
+

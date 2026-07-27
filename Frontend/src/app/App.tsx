@@ -1448,8 +1448,15 @@ export default function App() {
       } catch (err) { console.warn("Reject call failed:", err); }
     }
   };
-  const handleTogglePolicy = (id: string) => {
-    setPolicies((ps) => ps.map((p) => p.id === id ? { ...p, enabled: !p.enabled } : p));
+  const handleTogglePolicy = async (id: string) => {
+    const target = policies.find((p) => p.id === id);
+    const nextEnabled = target ? !target.enabled : true;
+    setPolicies((ps) => ps.map((p) => p.id === id ? { ...p, enabled: nextEnabled } : p));
+    try {
+      await api.updatePolicy(id, nextEnabled);
+    } catch (err) {
+      console.warn("Failed to update policy on backend:", err);
+    }
   };
   const handleDemoComplete = (results: { request: ExecuteRequestPayload; response: ExecuteResponse }[]) => {
     const newRows = results.map(({ request, response }) => executeResponseToRow(request, response));

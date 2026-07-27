@@ -180,6 +180,38 @@ class PolicyService:
         )
         return list(result.all())
 
+    async def list_all(self, session: AsyncSession) -> list[Policy]:
+        result = await session.scalars(
+            select(Policy)
+            .order_by(Policy.severity.desc(), Policy.policy_code.asc())
+        )
+        return list(result.all())
+
+    async def update_policy(
+        self,
+        session: AsyncSession,
+        policy_code: str,
+        enabled: bool,
+    ) -> Policy | None:
+        policy = await session.scalar(
+            select(Policy).where(Policy.policy_code == policy_code)
+        )
+        if policy is None:
+            return None
+
+        policy.enabled = enabled
+        policy.updated_at = func.now()
+
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+        await session.refresh(policy)
+        return policy
+
+
 
 class ExecutionService:
     def __init__(

@@ -120,3 +120,8 @@ class PolicyResponse(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+
+
+class PolicyUpdateRequest(BaseModel):
+    enabled: bool = Field(description="Enabled status of the security policy.")
+

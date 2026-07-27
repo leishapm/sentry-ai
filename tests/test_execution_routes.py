@@ -104,6 +104,24 @@ class FakePolicyService:
             )
         ]
 
+    async def list_all(self, session: object) -> list[SimpleNamespace]:
+        return await self.list_active(session)
+
+    async def update_policy(self, session: object, policy_code: str, enabled: bool) -> SimpleNamespace | None:
+        if policy_code != "SCOPE_BOUNDARY":
+            return None
+        now = datetime.now(UTC)
+        return SimpleNamespace(
+            id=uuid4(),
+            policy_code=policy_code,
+            name="Scope Boundary",
+            description="Prevents out-of-scope actions.",
+            severity=PolicySeverity.HIGH,
+            enabled=enabled,
+            created_at=now,
+            updated_at=now,
+        )
+
 
 async def fake_session() -> object:
     mock = AsyncMock()
@@ -201,3 +219,20 @@ async def test_policies_endpoint_returns_active_policies() -> None:
 
     assert response.status_code == 200
     assert response.json()[0]["policy_code"] == "SCOPE_BOUNDARY"
+
+
+@pytest.mark.asyncio
+async def test_update_policy_endpoint_flips_enabled_status() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.patch(
+            "/policies/SCOPE_BOUNDARY",
+            json={"enabled": False},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["policy_code"] == "SCOPE_BOUNDARY"
+    assert response.json()["enabled"] is False
+
