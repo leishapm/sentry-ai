@@ -16,6 +16,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python "lib/" rule above also matches Frontend/src/app/lib/ (unrelated
+# JS helper folder) since gitignore patterns without a leading slash match at
+# any depth - explicitly un-ignore it.
+!Frontend/src/app/lib/
+!Frontend/src/app/lib/**
 parts/
 sdist/
 var/
@@ -216,3 +221,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / Frontend
+node_modules/
+Frontend/dist/
+.vite/

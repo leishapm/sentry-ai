@@ -8,6 +8,7 @@ import {
   Filter, Search, Play, Lock, RefreshCw, Eye, ArrowRight,
   Layers, GitBranch, ToggleLeft, ToggleRight,
 } from "lucide-react";
+import { api, type ExecuteRequestPayload, type ExecuteResponse, type AuditEntry, type PolicyResponse } from "./lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Decision = "ALLOW" | "BLOCK" | "CONFIRM";
@@ -40,6 +41,10 @@ interface ApprovalItem {
   requestedAt: string;
   details: string;
   reason: string;
+  // Present only for items created from a real POST /execute call; lets
+  // Approve/Reject call the live POST /approve/{id} endpoint. Seed/mock
+  // items have no backing approval request, so they stay purely local.
+  approvalRequestId?: string;
 }
 
 interface AuditRow {
@@ -229,6 +234,109 @@ const ToolIcon = ({ name }: { name: string }) => {
   if (name === "cpu") return <Cpu className={cls} />;
   return <Zap className={cls} />;
 };
+
+// ─── Backend Mapping ──────────────────────────────────────────────────────────
+// SENTRY's API returns a 0-100 risk_score, not a bucketed level - the dashboard
+// UI was designed around LOW/MEDIUM/HIGH/CRITICAL, so we bucket it client-side.
+function riskLevelFromScore(score: number): RiskLevel {
+  if (score >= 80) return "CRITICAL";
+  if (score >= 50) return "HIGH";
+  if (score >= 20) return "MEDIUM";
+  return "LOW";
+}
+
+function guessToolIcon(tool: string): string {
+  const t = tool.toLowerCase();
+  if (t.includes("mail")) return "mail";
+  if (t.includes("sql") || t.includes("database") || t.includes("customer") || t.includes("inventory") || t.includes("pricing")) return "database";
+  if (t.includes("http") || t.includes("web") || t.includes("api")) return "globe";
+  if (t.includes("shell") || t.includes("script") || t.includes("terminal") || t.includes("bash")) return "terminal";
+  return "zap";
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function auditEntryToRow(e: AuditEntry): AuditRow {
+  return {
+    id: e.id,
+    time: fmtTime(e.timestamp),
+    agent: e.agent_name,
+    action: e.action,
+    tool: e.tool_name,
+    decision: e.decision,
+    risk: riskLevelFromScore(e.risk_score),
+    policy: e.violated_policy || "—",
+    reason: e.reason || "",
+    status: e.decision === "CONFIRM" ? "pending" : "completed",
+  };
+}
+
+function auditEntryToAIRequest(e: AuditEntry): AIRequest {
+  const riskPayload = e.response_payload?.risk as { confidence_score?: number } | undefined;
+  const confidence = riskPayload?.confidence_score;
+  return {
+    id: e.id,
+    agentName: e.agent_name,
+    action: e.action,
+    tool: e.tool_name,
+    riskLevel: riskLevelFromScore(e.risk_score),
+    riskScore: e.risk_score,
+    decision: e.decision,
+    reason: e.reason || "",
+    policyViolated: e.violated_policy,
+    suggestedFix: e.suggested_fix || "No action required.",
+    timestamp: fmtTime(e.timestamp),
+    toolIcon: guessToolIcon(e.tool_name),
+    confidence: typeof confidence === "number" ? Math.round(confidence * 100) : 90,
+  };
+}
+
+function policyResponseToPolicy(p: PolicyResponse, triggered: number): Policy {
+  return {
+    id: p.policy_code,
+    name: p.name,
+    description: p.description,
+    category: "Security",
+    severity: p.severity,
+    enabled: p.enabled,
+    triggered,
+  };
+}
+
+function executeResponseToRow(request: ExecuteRequestPayload, response: ExecuteResponse): AuditRow {
+  return {
+    id: response.audit_log_id,
+    time: fmtTime(new Date().toISOString()),
+    agent: request.agent_name,
+    action: request.action,
+    tool: request.tool_name,
+    decision: response.decision,
+    risk: riskLevelFromScore(response.risk_score),
+    policy: response.violated_policy || "—",
+    reason: response.reason,
+    status: response.decision === "CONFIRM" ? "pending" : "completed",
+  };
+}
+
+function executeResponseToAIRequest(request: ExecuteRequestPayload, response: ExecuteResponse): AIRequest {
+  return {
+    id: response.audit_log_id,
+    agentName: request.agent_name,
+    action: request.action,
+    tool: request.tool_name,
+    riskLevel: riskLevelFromScore(response.risk_score),
+    riskScore: response.risk_score,
+    decision: response.decision,
+    reason: response.reason,
+    policyViolated: response.violated_policy,
+    suggestedFix: response.suggested_fix || "No action required.",
+    timestamp: fmtTime(new Date().toISOString()),
+    toolIcon: guessToolIcon(request.tool_name),
+    confidence: Math.round(response.confidence_score * 100),
+  };
+}
 
 // ─── Chart Components ─────────────────────────────────────────────────────────
 
@@ -592,62 +700,106 @@ function PipelineViz({ animStep }: { animStep: number }) {
 }
 
 // ─── Demo Modal ───────────────────────────────────────────────────────────────
+// Every scenario below is a REAL POST /execute call against the running SENTRY
+// backend - the decision, risk score, reasoning, and policy come from the live
+// rule engine + Granite reasoner, not canned data. Mirrors mcp_demo/scenarios.py.
 interface DemoScenario {
   title: string;
-  agent: string;
-  action: string;
-  tool: string;
-  decision: Decision;
-  risk: RiskLevel;
-  score: number;
-  policy: string | null;
-  reason: string;
-  needsApproval?: boolean;
+  request: ExecuteRequestPayload;
 }
 
+const DEMO_AGENT = "Sales Assistant";
+const DEMO_ALLOWED_SCOPES = ["inventory_read", "customer_read", "customer_write"];
+
 const DEMO_SCENARIOS: DemoScenario[] = [
-  { title: "Scenario 1: Inventory Read", agent: "Inventory Bot", action: "Read Inventory Table", tool: "BigQuery", decision: "ALLOW", risk: "LOW", score: 8, policy: null, reason: "Read-only access to approved dataset. Within scope." },
-  { title: "Scenario 2: Payroll Modification", agent: "Finance Bot", action: "Modify Payroll Records", tool: "Workday API", decision: "BLOCK", risk: "CRITICAL", score: 96, policy: "RBAC-04", reason: "Agent attempted to modify payroll outside its approved scope." },
-  { title: "Scenario 3: Delete Customer Record", agent: "Sales Assistant", action: "Delete Customer Record", tool: "PostgreSQL CRM", decision: "CONFIRM", risk: "HIGH", score: 82, policy: "RBAC-04", reason: "Destructive record deletion requires human approval.", needsApproval: true },
+  {
+    title: "Scenario 1: Inventory Read",
+    request: {
+      agent_name: DEMO_AGENT, tool_name: "read_inventory", action: "Check inventory for SKU-1024",
+      parameters: { sku: "SKU-1024" }, requested_scope: "inventory_read", allowed_scopes: DEMO_ALLOWED_SCOPES,
+    },
+  },
+  {
+    title: "Scenario 2: Unauthorized Pricing Change",
+    request: {
+      agent_name: DEMO_AGENT, tool_name: "update_pricing", action: "Change the listed price of SKU-1024 to $0.01",
+      parameters: { sku: "SKU-1024", new_price: 0.01 }, requested_scope: "pricing_write",
+      allowed_scopes: DEMO_ALLOWED_SCOPES, is_irreversible: true,
+    },
+  },
+  {
+    title: "Scenario 3: Delete Customer Record",
+    request: {
+      agent_name: DEMO_AGENT, tool_name: "delete_customer", action: "Delete customer record 134",
+      parameters: { customer_id: 134 }, requested_scope: "customer_write",
+      allowed_scopes: DEMO_ALLOWED_SCOPES, is_irreversible: true,
+    },
+  },
 ];
 
-function DemoModal({ onClose, onComplete }: { onClose: () => void; onComplete: (rows: AuditRow[]) => void }) {
+function DemoModal({ onClose, onComplete }: {
+  onClose: () => void;
+  onComplete: (results: { request: ExecuteRequestPayload; response: ExecuteResponse }[]) => void;
+}) {
   const [step, setStep] = useState(-1);
-  const [phase, setPhase] = useState<"running" | "approval" | "done">("running");
+  const [phase, setPhase] = useState<"running" | "approval" | "done" | "error">("running");
+  const [results, setResults] = useState<(ExecuteResponse | null)[]>(() => DEMO_SCENARIOS.map(() => null));
   const [approvalResult, setApprovalResult] = useState<"approved" | "rejected" | null>(null);
-  const current = step >= 0 && step < DEMO_SCENARIOS.length ? DEMO_SCENARIOS[step] : null;
-  const completed = step >= 0 ? DEMO_SCENARIOS.slice(0, Math.min(step + 1, DEMO_SCENARIOS.length)) : [];
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Drives each step: call the live API, then either wait for human approval
+  // (CONFIRM) or pause briefly for the UI to read before advancing.
   useEffect(() => {
     if (phase !== "running") return;
     if (step === -1) {
       const t = setTimeout(() => setStep(0), 600);
       return () => clearTimeout(t);
     }
-    if (step < DEMO_SCENARIOS.length) {
-      const s = DEMO_SCENARIOS[step];
-      if (s.needsApproval) { setPhase("approval"); return; }
-      const t = setTimeout(() => {
-        if (step + 1 < DEMO_SCENARIOS.length) setStep(step + 1);
-        else setPhase("done");
-      }, 1800);
-      return () => clearTimeout(t);
-    }
+    if (step >= DEMO_SCENARIOS.length || results[step] !== null) return;
+    let cancelled = false;
+    api.execute(DEMO_SCENARIOS[step].request)
+      .then((response) => {
+        if (cancelled) return;
+        setResults((r) => { const next = [...r]; next[step] = response; return next; });
+        if (response.decision === "CONFIRM") {
+          setPhase("approval");
+          return;
+        }
+        setTimeout(() => {
+          if (cancelled) return;
+          if (step + 1 < DEMO_SCENARIOS.length) setStep(step + 1);
+          else setPhase("done");
+        }, 900);
+      })
+      .catch((err) => {
+        if (!cancelled) { setErrorMsg(err instanceof Error ? err.message : String(err)); setPhase("error"); }
+      });
+    return () => { cancelled = true; };
   }, [step, phase]);
 
-  const handleApprovalAction = (result: "approved" | "rejected") => {
+  useEffect(() => {
+    if (phase !== "done") return;
+    const completed = DEMO_SCENARIOS
+      .map((s, i) => ({ request: s.request, response: results[i] }))
+      .filter((r): r is { request: ExecuteRequestPayload; response: ExecuteResponse } => r.response !== null);
+    onComplete(completed);
+  }, [phase]);
+
+  const handleApprovalAction = async (result: "approved" | "rejected") => {
+    const response = results[step];
     setApprovalResult(result);
     setPhase("running");
+    if (response?.approval_request_id) {
+      try {
+        await api.decideApproval(response.approval_request_id, result === "approved" ? "APPROVED" : "REJECTED");
+      } catch (err) {
+        console.warn("Approval decision failed:", err);
+      }
+    }
     setTimeout(() => {
-      const newRows: AuditRow[] = DEMO_SCENARIOS.map((s, i) => ({
-        id: `demo-${i}`, time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }),
-        agent: s.agent, action: s.action, tool: s.tool, decision: s.decision,
-        risk: s.risk, policy: s.policy || "—", reason: s.reason,
-        status: i === 2 ? (result === "approved" ? "overridden" : "completed") : "completed",
-      }));
-      onComplete(newRows);
-      setPhase("done");
-    }, 1200);
+      if (step + 1 < DEMO_SCENARIOS.length) setStep(step + 1);
+      else setPhase("done");
+    }, 900);
   };
 
   return (
@@ -657,39 +809,56 @@ function DemoModal({ onClose, onComplete }: { onClose: () => void; onComplete: (
           <div className="flex items-center gap-2">
             <Play size={14} className="text-blue-400" />
             <span className="text-sm font-semibold">SENTRY Demo Mode</span>
+            <span className="text-[10px] text-muted-foreground">— live calls to /execute</span>
             {phase === "running" && step >= 0 && <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X size={16} /></button>
         </div>
         <div className="p-5 space-y-4">
+          {phase === "error" && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3 text-center">
+              <XCircle size={20} className="text-red-400 mx-auto mb-1.5" />
+              <div className="text-sm font-semibold text-foreground">SENTRY API unreachable</div>
+              <div className="text-xs text-muted-foreground mt-1 break-all">{errorMsg}</div>
+              <div className="text-xs text-muted-foreground mt-1">Make sure the backend is running (docker compose up).</div>
+              <button onClick={onClose}
+                className="mt-3 px-4 py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/30 text-blue-400 text-xs font-semibold hover:bg-blue-500/30 transition-colors">
+                Close
+              </button>
+            </div>
+          )}
           {DEMO_SCENARIOS.map((s, i) => {
-            const isDone = i < step || (i === step && phase === "done") || (i === 2 && approvalResult !== null);
-            const isActive = i === step && (phase === "running" || (phase === "approval" && s.needsApproval));
-            const isPending = i > step;
+            const response = results[i];
+            const isActive = i === step && response === null && phase !== "error";
+            const isAwaitingApproval = i === step && phase === "approval" && response?.decision === "CONFIRM" && !approvalResult;
+            const isDone = response !== null && !isAwaitingApproval;
             return (
               <div key={s.title} className={`rounded-xl border p-3.5 transition-all duration-500 ${
-                isActive ? "border-blue-500/40 bg-blue-500/5 shadow-[0_0_16px_rgba(59,130,246,0.15)]"
+                isActive || isAwaitingApproval ? "border-blue-500/40 bg-blue-500/5 shadow-[0_0_16px_rgba(59,130,246,0.15)]"
                 : isDone ? "border-border bg-secondary/20 opacity-80"
                 : "border-border/40 bg-secondary/10 opacity-40"
               }`}>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[10px] text-muted-foreground font-mono">{s.title}</span>
-                  {isActive && phase === "running" && <RefreshCw size={10} className="text-blue-400 animate-spin" />}
-                  {isDone && <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border font-mono ${decisionBg(s.decision)}`}><DecisionIcon d={s.decision} size={9} />{s.decision}</span>}
-                  {isDone && i === 2 && approvalResult && (
+                  {isActive && <RefreshCw size={10} className="text-blue-400 animate-spin" />}
+                  {isDone && response && <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold border font-mono ${decisionBg(response.decision)}`}><DecisionIcon d={response.decision} size={9} />{response.decision}</span>}
+                  {isDone && response?.decision === "CONFIRM" && approvalResult && i === step && (
                     <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded ${approvalResult === "approved" ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
                       Human: {approvalResult.toUpperCase()}
                     </span>
                   )}
                 </div>
-                <div className="text-sm font-semibold text-foreground">{s.action}</div>
-                <div className="text-xs text-muted-foreground">{s.agent} · {s.tool}</div>
-                {(isActive || isDone) && s.policy && (
-                  <div className="mt-1.5 text-[10px] text-red-400 font-mono">Policy: {s.policy}</div>
+                <div className="text-sm font-semibold text-foreground">{s.request.action}</div>
+                <div className="text-xs text-muted-foreground">{s.request.agent_name} · {s.request.tool_name}</div>
+                {response?.violated_policy && (
+                  <div className="mt-1.5 text-[10px] text-red-400 font-mono">Policy: {response.violated_policy}</div>
                 )}
-                {isActive && phase === "approval" && s.needsApproval && (
+                {response && (
+                  <div className="mt-1.5 text-[10px] text-muted-foreground">{response.reason}</div>
+                )}
+                {isAwaitingApproval && response && (
                   <div className="mt-3 space-y-2">
-                    <div className="rounded-lg bg-yellow-400/5 border border-yellow-400/15 px-3 py-2 text-xs text-yellow-400">{s.reason}</div>
+                    <div className="rounded-lg bg-yellow-400/5 border border-yellow-400/15 px-3 py-2 text-xs text-yellow-400">{response.reason}</div>
                     <div className="flex gap-2">
                       <button onClick={() => handleApprovalAction("approved")}
                         className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold py-1.5 hover:bg-emerald-500/25 transition-colors">
@@ -1111,27 +1280,78 @@ export default function App() {
   const [demo, setDemo] = useState(false);
   const [allowed, setAllowed] = useState(1284);
   const [blocked, setBlocked] = useState(347);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  const handleApprove = (id: string) => {
+  // Pull real data from the SENTRY API on load. If the backend isn't running,
+  // this silently falls back to the seed data above so the UI still renders.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [auditRes, stats, policyList] = await Promise.all([
+          api.listAudit({ limit: 50 }),
+          api.getStats(),
+          api.listPolicies(),
+        ]);
+        if (cancelled) return;
+        if (auditRes.items.length > 0) {
+          setAuditLog(auditRes.items.map(auditEntryToRow));
+          setRequests(auditRes.items.map(auditEntryToAIRequest));
+        }
+        setAllowed(stats.allowed_requests);
+        setBlocked(stats.blocked_requests);
+        if (policyList.length > 0) {
+          const triggered = new Map<string, number>();
+          for (const e of auditRes.items) {
+            if (e.violated_policy) triggered.set(e.violated_policy, (triggered.get(e.violated_policy) ?? 0) + 1);
+          }
+          setPolicies(policyList.map((p) => policyResponseToPolicy(p, triggered.get(p.policy_code) ?? 0)));
+        }
+        setConnected(true);
+      } catch (err) {
+        console.warn("SENTRY API unavailable, showing demo seed data instead:", err);
+        setConnected(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleApprove = async (id: string) => {
+    const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
     setAllowed((a) => a + 1);
+    if (item?.approvalRequestId) {
+      try { await api.decideApproval(item.approvalRequestId, "APPROVED"); }
+      catch (err) { console.warn("Approve call failed:", err); }
+    }
   };
-  const handleReject = (id: string) => {
+  const handleReject = async (id: string) => {
+    const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
     setBlocked((b) => b + 1);
+    if (item?.approvalRequestId) {
+      try { await api.decideApproval(item.approvalRequestId, "REJECTED"); }
+      catch (err) { console.warn("Reject call failed:", err); }
+    }
   };
   const handleTogglePolicy = (id: string) => {
     setPolicies((ps) => ps.map((p) => p.id === id ? { ...p, enabled: !p.enabled } : p));
   };
-  const handleDemoComplete = (rows: AuditRow[]) => {
-    setAuditLog((log) => [...rows, ...log]);
-    setAllowed((a) => a + 1);
-    setBlocked((b) => b + 1);
+  const handleDemoComplete = (results: { request: ExecuteRequestPayload; response: ExecuteResponse }[]) => {
+    const newRows = results.map(({ request, response }) => executeResponseToRow(request, response));
+    const newAIRequests = results.map(({ request, response }) => executeResponseToAIRequest(request, response));
+    setAuditLog((log) => [...newRows, ...log]);
+    setRequests((reqs) => [...newAIRequests, ...reqs]);
+    // Refetch actual totals rather than guessing locally - the demo's CONFIRM
+    // scenario is already resolved via Approve/Reject inside the modal itself.
+    api.getStats()
+      .then((s) => { setAllowed(s.allowed_requests); setBlocked(s.blocked_requests); setConnected(true); })
+      .catch((err) => console.warn("Failed to refresh stats after demo:", err));
     setDemo(false);
   };
 
@@ -1191,9 +1411,9 @@ export default function App() {
         {/* Topbar */}
         <header className="shrink-0 h-14 border-b border-border flex items-center justify-between px-5 bg-card/60 backdrop-blur-sm">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.6)] animate-pulse" />
-              <span className="text-xs text-emerald-400 font-mono font-semibold">CONNECTED</span>
+            <div className="flex items-center gap-1.5" title={connected ? "Live data from the SENTRY API" : "SENTRY API unreachable — showing demo data"}>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${connected ? "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.6)]" : "bg-yellow-400 shadow-[0_0_6px_rgba(250,204,21,0.6)]"}`} />
+              <span className={`text-xs font-mono font-semibold ${connected ? "text-emerald-400" : "text-yellow-400"}`}>{connected ? "CONNECTED" : "DEMO DATA"}</span>
             </div>
             <span className="w-px h-4 bg-border" />
             <span className="text-xs text-muted-foreground">v2.4.1 <span className="text-blue-400">Enterprise</span></span>
