@@ -360,6 +360,61 @@ function executeResponseToAIRequest(request: ExecuteRequestPayload, response: Ex
   };
 }
 
+// ─── Real-data analytics (computed client-side from fetched /audit history) ───
+// No backend aggregation endpoints exist yet, so these derive everything from
+// the same AuditEntry[] the dashboard already fetches. Accurate but limited to
+// whatever window of history was pulled (see AUDIT_HISTORY_LIMIT).
+const AUDIT_HISTORY_LIMIT = 100; // GET /audit caps `limit` at 100 server-side
+
+function computeDecisionDistribution(items: AuditEntry[]): { name: string; value: number; fill: string }[] {
+  if (items.length === 0) return [];
+  const counts = { ALLOW: 0, BLOCK: 0, CONFIRM: 0 };
+  for (const e of items) counts[e.decision]++;
+  const total = items.length;
+  return [
+    { name: "ALLOW", value: Math.round((counts.ALLOW / total) * 100), fill: C.allow },
+    { name: "BLOCK", value: Math.round((counts.BLOCK / total) * 100), fill: C.block },
+    { name: "CONFIRM", value: Math.round((counts.CONFIRM / total) * 100), fill: C.confirm },
+  ];
+}
+
+function computeBlockedAgents(items: AuditEntry[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const e of items) {
+    if (e.decision === "BLOCK") counts.set(e.agent_name, (counts.get(e.agent_name) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count }));
+}
+
+function computeRiskTimeline(items: AuditEntry[]): { t: string; v: number }[] {
+  // API returns newest-first; reverse to chronological order for the chart.
+  return [...items].reverse().slice(-20).map((e) => ({
+    t: new Date(e.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    v: e.risk_score,
+  }));
+}
+
+function computeAllowedTrend(items: AuditEntry[]): string {
+  const lastHour = items.filter(
+    (e) => e.decision === "ALLOW" && Date.now() - new Date(e.timestamp).getTime() < 3_600_000
+  ).length;
+  return `${lastHour} in the last hour`;
+}
+
+function computeBlockedTrend(items: AuditEntry[]): string {
+  const critical = items.filter((e) => e.decision === "BLOCK" && e.risk_score >= 80).length;
+  return `${critical} critical event${critical === 1 ? "" : "s"}`;
+}
+
+function computeRiskTrend(items: AuditEntry[]): { text: string; positive: boolean } {
+  if (items.length < 2) return { text: "Not enough data yet", positive: true };
+  const recent = items.slice(0, Math.min(5, items.length)); // newest-first
+  const recentAvg = recent.reduce((s, e) => s + e.risk_score, 0) / recent.length;
+  const overallAvg = items.reduce((s, e) => s + e.risk_score, 0) / items.length;
+  const diff = recentAvg - overallAvg;
+  return { text: `${diff >= 0 ? "↑" : "↓"} ${Math.abs(diff).toFixed(1)}pts vs overall avg`, positive: diff < 0 };
+}
+
 // ─── Chart Components ─────────────────────────────────────────────────────────
 
 function Sparkline({ data, color, height = 36 }: { data: number[]; color: string; height?: number }) {
@@ -915,10 +970,11 @@ function DemoModal({ onClose, onComplete }: {
 
 // ─── Pages ────────────────────────────────────────────────────────────────────
 
-function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBlocked, kpiPending, kpiAvgRisk }: {
+function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBlocked, kpiPending, kpiAvgRisk, auditItems, connected }: {
   requests: AIRequest[]; queue: ApprovalItem[];
   onApprove: (id: string) => void; onReject: (id: string) => void;
   kpiAllowed: number; kpiBlocked: number; kpiPending: number; kpiAvgRisk: number;
+  auditItems: AuditEntry[]; connected: boolean;
 }) {
   const [pipeStep, setPipeStep] = useState(0);
   useEffect(() => {
@@ -926,14 +982,17 @@ function DashboardPage({ requests, queue, onApprove, onReject, kpiAllowed, kpiBl
     return () => clearInterval(t);
   }, []);
   const featured = requests.find((r) => r.decision === "BLOCK") ?? requests[0];
+  const allowedTrend = connected ? computeAllowedTrend(auditItems) : "+12% vs last hour";
+  const blockedTrend = connected ? computeBlockedTrend(auditItems) : "+3 critical events";
+  const riskTrend = connected ? computeRiskTrend(auditItems) : { text: "↑ 8.3pts from baseline", positive: false };
   return (
     <div className="space-y-5">
       {/* KPIs */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        <KPICard label="Allowed Requests" value={kpiAllowed.toLocaleString()} trend="+12% vs last hour" positive sparkData={SPARKLINE_ALLOWED} color={C.allow} icon={<CheckCircle2 size={14} className="text-emerald-400" />} />
-        <KPICard label="Blocked Requests" value={kpiBlocked.toLocaleString()} trend="+3 critical events" positive={false} sparkData={SPARKLINE_BLOCKED} color={C.block} icon={<XCircle size={14} className="text-red-400" />} />
+        <KPICard label="Allowed Requests" value={kpiAllowed.toLocaleString()} trend={allowedTrend} positive sparkData={SPARKLINE_ALLOWED} color={C.allow} icon={<CheckCircle2 size={14} className="text-emerald-400" />} />
+        <KPICard label="Blocked Requests" value={kpiBlocked.toLocaleString()} trend={blockedTrend} positive={false} sparkData={SPARKLINE_BLOCKED} color={C.block} icon={<XCircle size={14} className="text-red-400" />} />
         <KPICard label="Pending Approval" value={kpiPending} trend={`${kpiPending} awaiting review`} positive={kpiPending === 0} sparkData={SPARKLINE_PENDING} color={C.confirm} icon={<Clock size={14} className="text-yellow-400" />} />
-        <KPICard label="Avg Risk Score" value={kpiAvgRisk.toFixed(1)} trend="↑ 8.3pts from baseline" positive={false} sparkData={SPARKLINE_RISK} color={C.blue} icon={<TrendingUp size={14} className="text-blue-400" />} />
+        <KPICard label="Avg Risk Score" value={kpiAvgRisk.toFixed(1)} trend={riskTrend.text} positive={riskTrend.positive} sparkData={SPARKLINE_RISK} color={C.blue} icon={<TrendingUp size={14} className="text-blue-400" />} />
       </div>
 
       {/* Main grid */}
@@ -1123,7 +1182,16 @@ function AuditLogPage({ rows }: { rows: AuditRow[] }) {
   );
 }
 
-function AnalyticsPage() {
+function EmptyChartState({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center h-28 text-xs text-muted-foreground">{label}</div>
+  );
+}
+
+function AnalyticsPage({ auditItems, connected }: { auditItems: AuditEntry[]; connected: boolean }) {
+  const distData = connected ? computeDecisionDistribution(auditItems) : DIST_DATA;
+  const blockedAgents = connected ? computeBlockedAgents(auditItems) : BLOCKED_AGENTS;
+  const riskTimeline = connected ? computeRiskTimeline(auditItems) : RISK_TIMELINE;
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       <div className="rounded-xl border border-border bg-card p-4">
@@ -1131,41 +1199,43 @@ function AnalyticsPage() {
           <BarChart2 size={13} className="text-blue-400" />
           <span className="text-sm font-semibold">Decision Distribution</span>
         </div>
-        <div className="flex items-center gap-6">
-          <DonutChart data={DIST_DATA} />
-          <div className="space-y-2.5">
-            {DIST_DATA.map((d) => (
-              <div key={d.name} className="flex items-center gap-2.5">
-                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.fill }} />
-                <span className="text-xs text-foreground font-medium w-14">{d.name}</span>
-                <span className="text-xs font-mono text-muted-foreground">{d.value}%</span>
-                <div className="h-1.5 rounded-full flex-1 bg-secondary overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${d.value}%`, background: d.fill, opacity: 0.7 }} />
+        {distData.length === 0 ? <EmptyChartState label="No requests logged yet — run the demo." /> : (
+          <div className="flex items-center gap-6">
+            <DonutChart data={distData} />
+            <div className="space-y-2.5">
+              {distData.map((d) => (
+                <div key={d.name} className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.fill }} />
+                  <span className="text-xs text-foreground font-medium w-14">{d.name}</span>
+                  <span className="text-xs font-mono text-muted-foreground">{d.value}%</span>
+                  <div className="h-1.5 rounded-full flex-1 bg-secondary overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${d.value}%`, background: d.fill, opacity: 0.7 }} />
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-center gap-2 mb-4">
           <TrendingUp size={13} className="text-blue-400" />
           <span className="text-sm font-semibold">Risk Score Over Time</span>
         </div>
-        <LineChartSVG data={RISK_TIMELINE} />
+        {riskTimeline.length < 2 ? <EmptyChartState label="Not enough history yet — run the demo a few times." /> : <LineChartSVG data={riskTimeline} />}
       </div>
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-center gap-2 mb-4">
           <XCircle size={13} className="text-red-400" />
           <span className="text-sm font-semibold">Top Blocked Agents</span>
         </div>
-        <BarChartSVG data={BLOCKED_AGENTS} />
+        {blockedAgents.length === 0 ? <EmptyChartState label="No BLOCK decisions logged yet." /> : <BarChartSVG data={blockedAgents} />}
       </div>
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex items-center gap-2 mb-4">
           <Layers size={13} className="text-blue-400" />
           <span className="text-sm font-semibold">Policy Violation Heatmap</span>
-          <span className="text-[10px] text-muted-foreground ml-1">— this week</span>
+          <span className="text-[10px] text-muted-foreground ml-1">— illustrative (needs multi-day history)</span>
         </div>
         <HeatmapSVG data={POLICY_HEATMAP} />
         <div className="flex items-center gap-3 mt-3">
@@ -1306,71 +1376,76 @@ export default function App() {
   const [blocked, setBlocked] = useState(347);
   const [avgRisk, setAvgRisk] = useState(42.7);
   const [connected, setConnected] = useState(false);
+  const [auditItems, setAuditItems] = useState<AuditEntry[]>([]);
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
+  // Single source of truth for "pull the current state from the SENTRY API."
+  // Used on mount and after any mutation (approve/reject, demo run) so every
+  // derived view - KPIs, queue, audit log, analytics - stays consistent with
+  // the database instead of being patched ad hoc in multiple places.
+  const refreshFromApi = async () => {
+    const [auditRes, stats, policyList] = await Promise.all([
+      api.listAudit({ limit: AUDIT_HISTORY_LIMIT }),
+      api.getStats(),
+      api.listPolicies(),
+    ]);
+    setAuditItems(auditRes.items);
+    if (auditRes.items.length > 0) {
+      setAuditLog(auditRes.items.map(auditEntryToRow));
+      setRequests(auditRes.items.map(auditEntryToAIRequest));
+      setQueue(
+        auditRes.items
+          .filter((e) => e.approval_status === "PENDING" && e.approval_request_id)
+          .map(auditEntryToApprovalItem)
+      );
+    }
+    setAllowed(stats.allowed_requests);
+    setBlocked(stats.blocked_requests);
+    setAvgRisk(stats.average_risk_score);
+    if (policyList.length > 0) {
+      const triggered = new Map<string, number>();
+      for (const e of auditRes.items) {
+        if (e.violated_policy) triggered.set(e.violated_policy, (triggered.get(e.violated_policy) ?? 0) + 1);
+      }
+      setPolicies(policyList.map((p) => policyResponseToPolicy(p, triggered.get(p.policy_code) ?? 0)));
+    }
+    setConnected(true);
+  };
+
   // Pull real data from the SENTRY API on load. If the backend isn't running,
   // this silently falls back to the seed data above so the UI still renders.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const [auditRes, stats, policyList] = await Promise.all([
-          api.listAudit({ limit: 50 }),
-          api.getStats(),
-          api.listPolicies(),
-        ]);
-        if (cancelled) return;
-        if (auditRes.items.length > 0) {
-          setAuditLog(auditRes.items.map(auditEntryToRow));
-          setRequests(auditRes.items.map(auditEntryToAIRequest));
-          setQueue(
-            auditRes.items
-              .filter((e) => e.approval_status === "PENDING" && e.approval_request_id)
-              .map(auditEntryToApprovalItem)
-          );
-        }
-        setAllowed(stats.allowed_requests);
-        setBlocked(stats.blocked_requests);
-        setAvgRisk(stats.average_risk_score);
-        if (policyList.length > 0) {
-          const triggered = new Map<string, number>();
-          for (const e of auditRes.items) {
-            if (e.violated_policy) triggered.set(e.violated_policy, (triggered.get(e.violated_policy) ?? 0) + 1);
-          }
-          setPolicies(policyList.map((p) => policyResponseToPolicy(p, triggered.get(p.policy_code) ?? 0)));
-        }
-        setConnected(true);
-      } catch (err) {
-        console.warn("SENTRY API unavailable, showing demo seed data instead:", err);
-        setConnected(false);
-      }
-    })();
+    refreshFromApi().catch((err) => {
+      if (cancelled) return;
+      console.warn("SENTRY API unavailable, showing demo seed data instead:", err);
+      setConnected(false);
+    });
     return () => { cancelled = true; };
   }, []);
 
-  // Approving/rejecting a CONFIRM is a human override, not a new SENTRY
-  // decision - it does not change allowed/blocked counts (those reflect
-  // SENTRY's own ALLOW/BLOCK verdicts), only the item's resolved status.
   const handleApprove = async (id: string) => {
     const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
-    setAuditLog((log) => log.map((row) => (row.id === id ? { ...row, status: "overridden" } : row)));
     if (item?.approvalRequestId) {
-      try { await api.decideApproval(item.approvalRequestId, "APPROVED"); }
-      catch (err) { console.warn("Approve call failed:", err); }
+      try {
+        await api.decideApproval(item.approvalRequestId, "APPROVED");
+        await refreshFromApi();
+      } catch (err) { console.warn("Approve call failed:", err); }
     }
   };
   const handleReject = async (id: string) => {
     const item = queue.find((i) => i.id === id);
     setQueue((q) => q.filter((i) => i.id !== id));
-    setAuditLog((log) => log.map((row) => (row.id === id ? { ...row, status: "completed" } : row)));
     if (item?.approvalRequestId) {
-      try { await api.decideApproval(item.approvalRequestId, "REJECTED"); }
-      catch (err) { console.warn("Reject call failed:", err); }
+      try {
+        await api.decideApproval(item.approvalRequestId, "REJECTED");
+        await refreshFromApi();
+      } catch (err) { console.warn("Reject call failed:", err); }
     }
   };
   const handleTogglePolicy = (id: string) => {
@@ -1381,11 +1456,9 @@ export default function App() {
     const newAIRequests = results.map(({ request, response }) => executeResponseToAIRequest(request, response));
     setAuditLog((log) => [...newRows, ...log]);
     setRequests((reqs) => [...newAIRequests, ...reqs]);
-    // Refetch actual totals rather than guessing locally - the demo's CONFIRM
+    // Refetch everything rather than guessing locally - the demo's CONFIRM
     // scenario is already resolved via Approve/Reject inside the modal itself.
-    api.getStats()
-      .then((s) => { setAllowed(s.allowed_requests); setBlocked(s.blocked_requests); setAvgRisk(s.average_risk_score); setConnected(true); })
-      .catch((err) => console.warn("Failed to refresh stats after demo:", err));
+    refreshFromApi().catch((err) => console.warn("Failed to refresh after demo:", err));
     setDemo(false);
   };
 
@@ -1493,12 +1566,13 @@ export default function App() {
         <main className="flex-1 overflow-auto p-5" style={{ scrollbarWidth: "none" }}>
           {page === "dashboard" && (
             <DashboardPage requests={requests} queue={queue} onApprove={handleApprove} onReject={handleReject}
-              kpiAllowed={allowed} kpiBlocked={blocked} kpiPending={queue.length} kpiAvgRisk={avgRisk} />
+              kpiAllowed={allowed} kpiBlocked={blocked} kpiPending={queue.length} kpiAvgRisk={avgRisk}
+              auditItems={auditItems} connected={connected} />
           )}
           {page === "live" && <LiveRequestsPage requests={requests} />}
           {page === "queue" && <ApprovalQueuePage queue={queue} onApprove={handleApprove} onReject={handleReject} />}
           {page === "audit" && <AuditLogPage rows={auditLog} />}
-          {page === "analytics" && <AnalyticsPage />}
+          {page === "analytics" && <AnalyticsPage auditItems={auditItems} connected={connected} />}
           {page === "policies" && <PoliciesPage policies={policies} onToggle={handleTogglePolicy} />}
           {page === "settings" && <SettingsPage />}
         </main>
