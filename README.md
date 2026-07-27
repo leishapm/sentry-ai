@@ -1,6 +1,8 @@
 # SENTRY
 > **An AI Execution Firewall for Autonomous Agents**
 
+**AI Builders Challenge with IBM Bob — Wildcard Challenge: Intelligent Systems for the Future of Work**
+
 SENTRY is a lightweight, real-time security firewall that sits between AI agents and external tools. It evaluates agent actions against strict safety rules, computes dynamic risk scores, leverages explainable AI reasoning, records comprehensive audit logs, and enforces human-in-the-loop approval workflows before high-risk actions are executed.
 
 ---
@@ -25,10 +27,10 @@ As AI agents transition from passive chat assistants to autonomous systems capab
   - `CONFIRM`: Medium-risk requests pause and require human reviewer approval.
   - `BLOCK`: High-risk or policy-violating requests are safely halted.
 - 👤 **Human Approval Workflow**: Interactive approval queue allowing human operators to approve or reject pending execution requests with reviewer attribution.
-- 🧠 **Explainable AI Reasoning**: Dedicated AI reasoning layer (`AIReasoner` interface with IBM Granite-ready implementation) producing human-readable explanations, identified policy violations, suggested fixes, and confidence scores.
+- 🧠 **Explainable AI Reasoning**: Dedicated AI reasoning layer (`AIReasoner` interface, implemented by `GraniteReasoner`) producing human-readable explanations, identified policy violations, suggested fixes, and confidence scores.
 - 📜 **Immutable Audit Logging**: Detailed execution metadata tracking (request payload, rule results, reasoning output, risk score, decision, execution latency, and timestamps).
-- 📈 **Dashboard-Ready APIs**: High-performance REST endpoints for security operations center (SOC) dashboards and monitoring.
-- 🤖 **IBM Granite-Ready Architecture**: Clean, decoupled AI reasoning abstraction structured for seamless integration with IBM Granite / watsonx.ai models.
+- 📈 **Live Dashboard**: React/Vite security operations center UI backed by real REST endpoints - live audit feed, approval queue, policy management, and analytics.
+- 🤖 **Real IBM Granite Integration**: `GraniteReasoner` calls watsonx.ai when credentials are configured, and falls back to a deterministic explanation otherwise so the pipeline always runs end to end.
 
 ---
 
@@ -57,7 +59,8 @@ As AI agents transition from passive chat assistants to autonomous systems capab
                            ▼
                ┌───────────────────────┐
                │      AI Reasoner      │
-               │ (IBM Granite Ready)   │
+               │  (IBM Granite/watsonx │
+               │   with mock fallback) │
                └───────────┬───────────┘
                            │ Structured Reasoning & Confidence
                            ▼
@@ -85,10 +88,11 @@ As AI agents transition from passive chat assistants to autonomous systems capab
 
 | Category | Technologies |
 | :--- | :--- |
-| **Frontend** | Next.js, React, TypeScript, Tailwind CSS *(Dashboard integration)* |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS v4, shadcn/Radix UI |
 | **Backend** | Python 3.12+, FastAPI, Pydantic v2, AsyncIO |
 | **Database** | PostgreSQL 16, Async SQLAlchemy 2.0, Alembic Migrations |
-| **AI Reasoning** | IBM Granite (watsonx.ai placeholder architecture), Custom Reasoning Protocol |
+| **AI Reasoning** | IBM Granite via watsonx.ai (`ibm-watsonx-ai` SDK), with a deterministic mock fallback when no credentials are configured |
+| **Agent Protocol** | MCP (Model Context Protocol) demo server + client (`mcp_demo/`) |
 | **DevOps & Testing** | Docker, Docker Compose, Pytest, Uvicorn |
 
 ---
@@ -108,6 +112,9 @@ As AI agents transition from passive chat assistants to autonomous systems capab
 │   ├── models/                  # Centralized SQLAlchemy model registry
 │   ├── policies/                # Security policy models & schemas
 │   └── main.py                  # FastAPI application entrypoint
+├── Frontend/                    # React + Vite security operations center dashboard
+│   └── src/app/                 # App.tsx (pages/components) + lib/api.ts (backend client)
+├── mcp_demo/                    # Real MCP server + client agent demoing AI Agent → SENTRY → Tool
 ├── tests/                       # Automated test suite (Pytest)
 ├── alembic/                     # Database schema migration scripts
 ├── docker-compose.yml           # Multi-container orchestration (API + PostgreSQL)
@@ -125,7 +132,8 @@ As AI agents transition from passive chat assistants to autonomous systems capab
 | `POST` | `/execute` | Evaluates tool call request through Rule & Risk engines, returns decision (`ALLOW`/`BLOCK`/`CONFIRM`), risk score, reasoning output, and audit ID. |
 | `GET` | `/audit` | Retrieves paginated audit logs with filtering by agent, tool, decision, and risk threshold. |
 | `GET` | `/stats` | Returns aggregated metrics for security dashboards (total executions, decision distribution, average risk, average latency). |
-| `GET` | `/policies` | Lists active security policies ordered by severity. |
+| `GET` | `/policies` | Lists all security policies (enabled and disabled) ordered by severity. |
+| `PATCH` | `/policies/{policy_code}` | Enables or disables a security policy. |
 | `POST` | `/approve/{id}` | Processes human reviewer approval or rejection for a pending `CONFIRM` request. |
 | `GET` | `/health` | Health check endpoint reporting API service and PostgreSQL database connection status. |
 
@@ -139,12 +147,13 @@ As AI agents transition from passive chat assistants to autonomous systems capab
 
 - [Docker](https://www.docker.com/) and Docker Compose
 - Python 3.12+ (for local development without Docker)
+- Node.js 20+ and [pnpm](https://pnpm.io/) (for the dashboard)
 
-### Setup Instructions
+### Backend Setup
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/your-username/sentry-ai.git
+   git clone https://github.com/leishapm/sentry-ai.git
    cd sentry-ai
    ```
 
@@ -152,6 +161,7 @@ As AI agents transition from passive chat assistants to autonomous systems capab
    ```bash
    cp .env.example .env
    ```
+   To enable real IBM Granite reasoning (instead of the deterministic mock fallback), set `WATSONX_API_KEY` and `WATSONX_PROJECT_ID` in `.env`.
 
 3. **Start the Service with Docker**:
    ```bash
@@ -159,20 +169,60 @@ As AI agents transition from passive chat assistants to autonomous systems capab
    ```
    *This starts the FastAPI backend server on `http://localhost:8000` and a healthy PostgreSQL 16 container on port `5432`.*
 
-4. **Verify Backend Health**:
+4. **Run Database Migrations** *(first run only)*:
+   ```bash
+   docker compose exec api alembic upgrade head
+   ```
+
+5. **Verify Backend Health**:
    ```bash
    curl http://localhost:8000/health
    ```
 
-5. **Run Test Suite**:
+6. **Run Test Suite**:
    ```bash
    pytest
    ```
 
-6. **Frontend Setup** *(Placeholder for Dashboard UI)*:
-   ```bash
-   # Navigate to frontend directory once available
-   # cd frontend && npm install && npm run dev
-   ```
+### Frontend Setup
+
+The dashboard lives in `Frontend/` and talks to the API above.
+
+```bash
+cd Frontend
+cp .env.example .env   # VITE_API_URL, defaults to http://localhost:8000
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:5173`. The dashboard pulls live audit/stats/policy data
+from the backend on load (shown as `CONNECTED` in the header) and falls back
+to demo data automatically if the backend isn't reachable (`DEMO DATA` badge).
+Click **Run Demo** to fire real `POST /execute` requests through the rule
+engine and AI reasoner end to end.
+
+### MCP Demo (optional)
+
+`mcp_demo/` demonstrates the same `AI Agent → SENTRY → Tool` flow over the
+real Model Context Protocol, with the live backend as the policy checkpoint:
+
+```bash
+python -m mcp_demo.scenarios
+```
+
+---
+
+## How IBM Bob Was Used
+
+<!-- TODO (team): replace this with what actually happened. Required by the
+     submission rules - be specific per person/component, not generic. -->
+
+- **Backend & middleware** (Leisha): _fill in - which parts of `src/execution/`,
+  `src/audit_logs/`, `src/approval_requests/`, the Docker/Alembic setup, etc.
+  were built or accelerated with IBM Bob?_
+- **Frontend dashboard**: _fill in - was the `Frontend/` UI generated or
+  iterated on with IBM Bob?_
+- **AI integration** (Rushika): _fill in - watsonx.ai/Granite wiring, the
+  rule/reasoning/risk pipeline, MCP demo agent._
 
 ---
