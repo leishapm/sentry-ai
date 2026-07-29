@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     watsonx_api_key: str | None = Field(default=None)
     watsonx_project_id: str | None = Field(default=None)
     watsonx_url: str = Field(default="https://us-south.ml.cloud.ibm.com")
-    watsonx_model_id: str = Field(default="ibm/granite-3-8b-instruct")
+    # "granite-3-8b-instruct" isn't available on every watsonx.ai Runtime
+    # instance/region - "granite-4-h-small" is confirmed available on the
+    # team's project and is the current general-purpose Granite chat model.
+    watsonx_model_id: str = Field(default="ibm/granite-4-h-small")
 
     model_config = SettingsConfigDict(
         env_file=".env",

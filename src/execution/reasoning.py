@@ -82,7 +82,9 @@ class GraniteReasoner:
             model_id=self.model_id,
             credentials=Credentials(url=settings.watsonx_url, api_key=self.api_key),
             project_id=settings.watsonx_project_id,
-            params={"temperature": 0, "max_new_tokens": 300},
+            # max_new_tokens is the text-generation param name; .chat() uses
+            # OpenAI-style max_tokens and silently ignores the wrong one.
+            params={"temperature": 0, "max_tokens": 300},
         )
 
     def explain(

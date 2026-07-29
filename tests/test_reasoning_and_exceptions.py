@@ -2,6 +2,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
+from src.core.config import settings
 from src.core.enums import Decision, PolicySeverity
 from src.core.exceptions import EntityNotFoundException, InvalidOperationException
 from src.execution.reasoning import GraniteReasoner, ReasoningOutput, RuleBasedReasoner
@@ -9,6 +10,17 @@ from src.execution.risk_engine import RiskEngine
 from src.execution.rule_engine import RuleEngine
 from src.execution.schemas import RuleResult, ToolExecutionRequest
 from src.main import app
+
+
+@pytest.fixture(autouse=True)
+def _force_offline_granite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests assert on GraniteReasoner's deterministic placeholder
+    output, not real Granite output. Without this, a developer with a local
+    .env containing real watsonx credentials would have these tests silently
+    make real network calls to IBM Cloud and fail on non-deterministic LLM
+    text/confidence scores instead of testing the fallback logic."""
+    monkeypatch.setattr(settings, "watsonx_api_key", None)
+    monkeypatch.setattr(settings, "watsonx_project_id", None)
 
 
 def test_granite_reasoner_pass_output() -> None:
