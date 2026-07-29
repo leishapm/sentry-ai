@@ -62,7 +62,17 @@ class GraniteReasoner:
     def __init__(self, api_key: str | None = None, model_id: str | None = None) -> None:
         self.api_key = api_key or settings.watsonx_api_key
         self.model_id = model_id or settings.watsonx_model_id
-        self._client = self._build_client() if self.api_key and settings.watsonx_project_id else None
+        self._client = None
+        if self.api_key and settings.watsonx_project_id:
+            try:
+                self._client = self._build_client()
+            except Exception:
+                # ibm-watsonx-ai eagerly validates the project/credentials by
+                # fetching model specs at construction time, so a misconfigured
+                # project (no WML instance associated, bad key, network issue)
+                # would otherwise crash every single request that instantiates
+                # a GraniteReasoner - not just this one call. Fail safe instead.
+                logger.exception("Failed to initialize watsonx client; falling back to templated explanations")
 
     def _build_client(self):
         from ibm_watsonx_ai import Credentials

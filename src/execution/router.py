@@ -1,3 +1,4 @@
+from functools import lru_cache
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
@@ -26,7 +27,13 @@ from src.execution.services import (
 router = APIRouter(tags=["Execution & Audit"])
 
 
+@lru_cache
 def get_execution_service() -> ExecutionService:
+    # ExecutionService (via GraniteReasoner) builds a watsonx client that
+    # eagerly fetches model specs from IBM Cloud at construction time. Without
+    # caching, that round-trip - and its cost/latency - happened on every
+    # single /execute call. RuleEngine/RiskEngine hold no per-request state,
+    # so a process-wide singleton is safe.
     return ExecutionService()
 
 
