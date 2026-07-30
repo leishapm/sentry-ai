@@ -47,6 +47,16 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        # Managed Postgres providers (Render, Railway, Heroku, ...) hand out a
+        # bare "postgresql://" URL, but create_async_engine needs the asyncpg
+        # dialect prefix or it fails to find a compatible driver at startup.
+        if value.startswith("postgresql://") or value.startswith("postgres://"):
+            return "postgresql+asyncpg://" + value.split("://", 1)[1]
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:

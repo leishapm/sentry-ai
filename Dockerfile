@@ -17,5 +17,8 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form (not exec form) so $PORT expands - hosts like Render assign a
+# dynamic port via env var rather than the fixed 8000 docker-compose uses
+# locally. Runs migrations before serving so a fresh deploy has a live schema.
+CMD alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}
 
