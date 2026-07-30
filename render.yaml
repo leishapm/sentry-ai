@@ -22,7 +22,7 @@ services:
           name: sentry-db
           property: connectionString
       - key: CORS_ORIGINS
-        value: http://localhost:5173
+        value: http://localhost:5173,https://sentry-ai-frontend.vercel.app
       - key: CORS_ALLOW_CREDENTIALS
         value: "true"
       - key: WATSONX_API_KEY
