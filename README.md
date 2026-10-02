@@ -10,7 +10,7 @@ SENTRY sits between an AI agent and the tools it wants to call. Before a tool ca
 
 Modern AI agents are moving from chat-only assistants to systems that can take real actions. That creates a new control problem: the dangerous part is often not what the model says, but what the model does.
 
-SENTRY provides a lightweight checkpoint for those actions:
+### SENTRY provides a lightweight checkpoint for those actions:
 
 - Prevent agents from using tools outside their allowed scope.
 - Detect sensitive parameters such as tokens, passwords, API keys, and secrets.
