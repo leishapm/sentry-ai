@@ -1394,25 +1394,23 @@ export default function App() {
       api.listPolicies(),
     ]);
     setAuditItems(auditRes.items);
-    if (auditRes.items.length > 0) {
-      setAuditLog(auditRes.items.map(auditEntryToRow));
-      setRequests(auditRes.items.map(auditEntryToAIRequest));
-      setQueue(
-        auditRes.items
-          .filter((e) => e.approval_status === "PENDING" && e.approval_request_id)
-          .map(auditEntryToApprovalItem)
-      );
-    }
+    // A healthy but empty API is still the source of truth; do not leave seed
+    // records on screen after connecting to a fresh database.
+    setAuditLog(auditRes.items.map(auditEntryToRow));
+    setRequests(auditRes.items.map(auditEntryToAIRequest));
+    setQueue(
+      auditRes.items
+        .filter((e) => e.approval_status === "PENDING" && e.approval_request_id)
+        .map(auditEntryToApprovalItem)
+    );
     setAllowed(stats.allowed_requests);
     setBlocked(stats.blocked_requests);
     setAvgRisk(stats.average_risk_score);
-    if (policyList.length > 0) {
-      const triggered = new Map<string, number>();
-      for (const e of auditRes.items) {
-        if (e.violated_policy) triggered.set(e.violated_policy, (triggered.get(e.violated_policy) ?? 0) + 1);
-      }
-      setPolicies(policyList.map((p) => policyResponseToPolicy(p, triggered.get(p.policy_code) ?? 0)));
+    const triggered = new Map<string, number>();
+    for (const e of auditRes.items) {
+      if (e.violated_policy) triggered.set(e.violated_policy, (triggered.get(e.violated_policy) ?? 0) + 1);
     }
+    setPolicies(policyList.map((p) => policyResponseToPolicy(p, triggered.get(p.policy_code) ?? 0)));
     setConnected(true);
   };
 

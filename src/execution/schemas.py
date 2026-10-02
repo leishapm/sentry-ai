@@ -18,7 +18,7 @@ class ToolExecutionRequest(BaseModel):
     allowed_scopes: list[str] = Field(default_factory=list, description="List of scopes authorized for this agent.")
     estimated_cost_usd: float | None = Field(default=None, ge=0, description="Estimated execution cost in USD.")
     is_irreversible: bool = Field(default=False, description="Whether the action cannot be undone.")
-    user_confirmed: bool = Field(default=False, description="Whether explicit user confirmation was obtained.")
+    user_confirmed: bool = Field(default=False, description="Deprecated and ignored; caller input cannot authorize irreversible actions.")
     recent_requests_count: int = Field(default=0, ge=0, description="Recent request count for rate limiting.")
     context: dict[str, Any] = Field(default_factory=dict, description="Additional execution context metadata.")
 
@@ -124,4 +124,3 @@ class PolicyResponse(BaseModel):
 
 class PolicyUpdateRequest(BaseModel):
     enabled: bool = Field(description="Enabled status of the security policy.")
-

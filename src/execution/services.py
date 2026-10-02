@@ -8,8 +8,10 @@ from sqlalchemy.orm import selectinload
 from src.approval_requests.models import ApprovalRequest
 from src.audit_logs.models import AuditLog
 from src.core.enums import ApprovalStatus, Decision
+from src.core.exceptions import InvalidOperationException
 from src.execution.risk_engine import RiskEngine
 from src.execution.rule_engine import RuleEngine
+from src.execution.sanitization import redact_execution_request
 from src.execution.schemas import (
     ApprovalDecisionRequest,
     AuditListResponse,
@@ -152,9 +154,17 @@ class ApprovalService:
         approval_request_id: UUID,
         decision: ApprovalDecisionRequest,
     ) -> ApprovalRequest | None:
-        approval_request = await session.get(ApprovalRequest, approval_request_id)
+        approval_request = await session.scalar(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == approval_request_id)
+            .with_for_update()
+        )
         if approval_request is None:
             return None
+        if approval_request.status != ApprovalStatus.PENDING:
+            raise InvalidOperationException(
+                "Approval request has already reached a terminal state."
+            )
 
         approval_request.status = decision.status
         approval_request.approved_by = decision.approved_by
@@ -230,12 +240,16 @@ class ExecutionService:
         request: ToolExecutionRequest,
     ) -> ExecuteResponse:
         started_at = perf_counter()
-        rule_results = self.rule_engine.evaluate(request)
+        policy_rows = await session.execute(select(Policy.policy_code, Policy.enabled))
+        disabled_policy_codes = {
+            code for code, enabled in policy_rows.all() if not enabled
+        }
+        rule_results = self.rule_engine.evaluate(request, disabled_policy_codes)
         risk = self.risk_engine.assess(rule_results, request=request)
         execution_time_ms = max(0, round((perf_counter() - started_at) * 1000))
         audit_log, approval_request = await self.audit_log_service.record_execution(
             session=session,
-            request=request,
+            request=redact_execution_request(request),
             rule_results=rule_results,
             risk=risk,
             execution_time_ms=execution_time_ms,

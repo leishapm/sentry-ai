@@ -1,24 +1,16 @@
 from collections.abc import Callable, Sequence
 
 from src.core.enums import PolicySeverity
+from src.execution.sanitization import contains_credential
 from src.execution.schemas import RuleResult, ToolExecutionRequest
 
 Rule = Callable[[ToolExecutionRequest], RuleResult]
-
-SENSITIVE_PARAMETER_NAMES = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "password",
-        "private_key",
-        "secret",
-        "token",
-    }
-)
-
+NON_DISABLEABLE_POLICY_CODES = frozenset({"PARAMETER_SAFETY"})
 
 def check_scope(request: ToolExecutionRequest) -> RuleResult:
-    if request.allowed_scopes and request.requested_scope not in request.allowed_scopes:
+    if request.requested_scope is not None and (
+        not request.allowed_scopes or request.requested_scope not in request.allowed_scopes
+    ):
         return RuleResult(
             rule="Scope Check",
             policy_code="SCOPE_BOUNDARY",
@@ -38,17 +30,18 @@ def check_scope(request: ToolExecutionRequest) -> RuleResult:
 
 
 def check_parameters(request: ToolExecutionRequest) -> RuleResult:
-    sensitive_keys = SENSITIVE_PARAMETER_NAMES.intersection(
-        key.lower() for key in request.parameters
+    credential_found = any(
+        contains_credential(value)
+        for value in (request.parameters, request.context, request.action)
     )
-    if sensitive_keys:
+    if credential_found:
         return RuleResult(
             rule="Parameter Check",
             policy_code="PARAMETER_SAFETY",
             passed=False,
-            severity=PolicySeverity.MEDIUM,
-            reason="Request parameters include sensitive-looking fields.",
-            suggested_fix="Redact secrets before sending tool requests through SENTRY.",
+            severity=PolicySeverity.CRITICAL,
+            reason="Request contains credential-like fields and is blocked to prevent secret disclosure.",
+            suggested_fix="Remove credentials from the tool request and use a server-side secret reference.",
         )
 
     return RuleResult(
@@ -101,7 +94,10 @@ def check_cost(request: ToolExecutionRequest) -> RuleResult:
 
 
 def check_irreversible(request: ToolExecutionRequest) -> RuleResult:
-    if request.is_irreversible and not request.user_confirmed:
+    # `user_confirmed` is supplied by the caller and cannot establish that a
+    # human actually approved the action. Irreversible actions must go through
+    # the server-side approval workflow.
+    if request.is_irreversible:
         return RuleResult(
             rule="Irreversibility Check",
             policy_code="IRREVERSIBLE_ACTION",
@@ -133,6 +129,22 @@ class RuleEngine:
             )
         )
 
-    def evaluate(self, request: ToolExecutionRequest) -> list[RuleResult]:
-        return [rule(request) for rule in self.rules]
-
+    def evaluate(
+        self,
+        request: ToolExecutionRequest,
+        disabled_policy_codes: set[str] | frozenset[str] = frozenset(),
+    ) -> list[RuleResult]:
+        results = [rule(request) for rule in self.rules]
+        return [
+            result.model_copy(
+                update={
+                    "passed": True,
+                    "reason": "Policy is disabled by an administrator.",
+                    "suggested_fix": None,
+                }
+            )
+            if result.policy_code in disabled_policy_codes
+            and result.policy_code not in NON_DISABLEABLE_POLICY_CODES
+            else result
+            for result in results
+        ]

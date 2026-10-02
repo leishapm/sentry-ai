@@ -16,20 +16,32 @@ Modern AI agents are moving from chat-only assistants to systems that can take r
 - Detect sensitive parameters such as tokens, passwords, API keys, and secrets.
 - Flag high-cost, high-volume, or irreversible actions.
 - Route medium-risk actions to human approval instead of executing blindly.
-- Store every decision with request payloads, rule results, reasoning, timestamps, and latency.
+- Store every decision with redacted request payloads, rule results, reasoning, timestamps, and latency.
 - Demonstrate how a real MCP tool flow can be protected by an execution firewall.
 
 ## Core Features
 
 - **Execution firewall API** - FastAPI service that evaluates proposed agent tool calls in real time.
-- **Rule engine** - Scope, parameter safety, rate limit, cost, and irreversible-action checks.
+- **Rule engine** - Scope, credential, caller-reported rate/cost, and irreversible-action checks. Rate and cost checks remain placeholders.
 - **Risk engine** - Converts failed rule severities into a 0-100 risk score.
 - **Tri-state decisions** - `ALLOW` for low risk, `CONFIRM` for review, `BLOCK` for high-risk violations.
 - **Human approval workflow** - Creates approval requests for confirmable actions and supports reviewer decisions.
+- **Policy controls** - Disabling an enabled seeded policy removes its corresponding rule from subsequent evaluations. Credential safety remains enforced even if its policy is disabled.
+- **Credential handling** - Credential-like fields are blocked, and common credential formats are redacted before audit persistence and Granite reasoning.
 - **IBM Granite-ready reasoning** - Uses watsonx.ai credentials when configured, with a deterministic fallback for local demos.
 - **Audit logging** - Persists execution history, rule output, reasoning, and approval state in PostgreSQL.
 - **SOC-style dashboard** - Vite + React frontend for live requests, approvals, policies, audit logs, and analytics.
 - **MCP demo** - A real MCP client/server demo where SENTRY gates calls before they reach mock enterprise tools.
+
+## Security and Production Readiness
+
+SENTRY is a hackathon/demo application and is not ready to protect production tools. The current API has no authentication, reviewer identity verification, agent registry, or tenant isolation. In particular, `allowed_scopes`, `recent_requests_count`, and estimated cost arrive in the caller's request; they are not trusted authorization or accounting sources. The legacy `user_confirmed` field is ignored, and irreversible actions always require a server-side approval decision. Do not expose this API to untrusted networks or use its response alone to authorize real tool execution.
+
+Credential-like parameter/context/action fields and common inline forms such as bearer credentials are rejected as `BLOCK` decisions. Detected values are redacted before the request is written to the audit log or passed to the reasoning provider. This is defense in depth, not a substitute for keeping secrets out of action text and payloads.
+
+Human approval currently records a reviewer decision in the database. It does not resume or execute the proposed tool call. Decisions are terminal: a pending request can be approved or rejected once. The rate and cost rules still use caller-provided values and are placeholders rather than enforced quotas.
+
+Before production use, add authenticated agent and reviewer identities, server-managed scopes and quotas, tenant isolation, signed short-lived execution approvals, and a trusted tool-side verification/invocation path. Add production monitoring, retention controls, and a PostgreSQL-backed integration test environment as part of that work.
 
 ## Architecture
 
@@ -127,7 +139,7 @@ npm install
 npm run dev
 ```
 
-The frontend uses `VITE_API_URL` when provided and otherwise defaults to `http://localhost:8000`.
+The frontend uses `VITE_API_URL` when provided and otherwise defaults to `http://localhost:8000`. The backend default CORS origin is `http://localhost:3000`; local Vite development normally needs `CORS_ORIGINS=http://localhost:5173` (Docker Compose includes both origins).
 
 Vite normally serves the dashboard at `http://localhost:5173`.
 
@@ -188,9 +200,9 @@ Settings are loaded from environment variables or a local `.env` file.
 | `WATSONX_API_KEY` | empty | Enables live watsonx.ai reasoning when set |
 | `WATSONX_PROJECT_ID` | empty | Required with `WATSONX_API_KEY` |
 | `WATSONX_URL` | `https://us-south.ml.cloud.ibm.com` | watsonx.ai endpoint |
-| `WATSONX_MODEL_ID` | `ibm/granite-3-8b-instruct` | Granite model used by the reasoner |
+| `WATSONX_MODEL_ID` | `ibm/granite-4-h-small` | Granite model used by the reasoner |
 
-If watsonx.ai credentials are not configured, SENTRY still works locally using the deterministic Granite-style fallback reasoner.
+If watsonx.ai credentials are not configured, SENTRY still works locally using the deterministic Granite-style fallback reasoner. Detected credential values are redacted before either reasoner is called.
 
 ## API Overview
 
@@ -239,7 +251,7 @@ curl -X POST http://localhost:8000/execute \
   }'
 ```
 
-Expected result: `CONFIRM`, plus an `approval_request_id` that can be passed to `/approve/{approval_request_id}`.
+Expected result: `CONFIRM`, plus an `approval_request_id` that can be passed once to `/approve/{approval_request_id}`. This records the decision; a separate trusted integration must still carry out (or discard) the tool call.
 
 ### Example: Blocked Request
 

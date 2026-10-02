@@ -1,5 +1,6 @@
 from src.core.enums import Decision, PolicySeverity
 from src.execution.reasoning import AIReasoner, GraniteReasoner
+from src.execution.sanitization import redact_execution_request
 from src.execution.schemas import RiskAssessment, RuleResult, ToolExecutionRequest
 
 SEVERITY_WEIGHTS = {
@@ -24,6 +25,10 @@ class RiskEngine:
             100,
             sum(SEVERITY_WEIGHTS[result.severity] for result in failed_rules),
         )
+        # Credential exposure is a hard safety failure and must never be
+        # reduced to ALLOW/CONFIRM by the weighted score thresholds.
+        if any(result.policy_code == "PARAMETER_SAFETY" for result in failed_rules):
+            risk_score = max(risk_score, 81)
         decision = self._decision_for_score(risk_score)
 
         # Fallback request object if none provided
@@ -33,7 +38,9 @@ class RiskEngine:
             action="unknown",
         )
 
-        reasoning = self.reasoner.explain(req, failed_rules)
+        # Policy evaluation uses the original request; external reasoning only
+        # receives its redacted copy so credentials cannot leave the service.
+        reasoning = self.reasoner.explain(redact_execution_request(req), failed_rules)
 
         return RiskAssessment(
             risk_score=risk_score,
